@@ -1,0 +1,69 @@
+name: Build debug APK
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack source
+        run: |
+          set -euo pipefail
+          unzip -q vela-fork-src.zip -d src
+          chmod +x src/gradlew
+          test -f src/app/build.gradle
+
+      - name: Provide placeholder Firebase config
+        run: |
+          cat > src/app/google-services.json <<'JSON'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "vela-ci",
+              "storage_bucket": "vela-ci.appspot.com"
+            },
+            "client": [
+              {
+                "client_info": {
+                  "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+                  "android_client_info": { "package_name": "dev.vela.launcher" }
+                },
+                "oauth_client": [],
+                "api_key": [ { "current_key": "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } ],
+                "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+              }
+            ],
+            "configuration_version": "1"
+          }
+          JSON
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: >-
+            platforms;android-36
+            ndk;28.2.13676358
+            cmake;3.22.1
+          log-accepted-android-sdk-licenses: false
+
+      - name: Build
+        working-directory: src
+        run: ./gradlew assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vela-debug-apk
+          path: src/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
