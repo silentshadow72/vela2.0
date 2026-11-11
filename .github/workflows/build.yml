@@ -86,7 +86,7 @@ jobs:
           python3 -c "import json; json.load(open('src/app/google-services.json')); print('placeholder config valid')"
 
       - name: Make gradlew executable
-        run: chmod +x ./gradlew
+        run: chmod +x src/gradlew
 
       # google-services.json is committed as a placeholder, so no secrets are
       # required. Firebase analytics/crash reporting stay inert; the launcher,
@@ -108,7 +108,7 @@ jobs:
           test -f build/libvela_render.so
 
           STAGE="$GITHUB_WORKSPACE/src/renderer/stage/VelaRender"
-          mkdir -p "$STAGE/pack" "$STAGE/pack_perf" "$STAGE/pack_perf"
+          mkdir -p "$STAGE/pack" "$STAGE/pack_perf"
           cp build/libvela_render.so "$STAGE/"
           cp "$GITHUB_WORKSPACE"/src/app/src/main/assets/vela_pack/* "$STAGE/pack/"
           cp "$GITHUB_WORKSPACE"/src/app/src/main/assets/vela_pack_perf/* "$STAGE/pack_perf/"
@@ -129,13 +129,14 @@ jobs:
           unzip -l "$GITHUB_WORKSPACE/src/app/src/main/assets/mods/VelaRender.levipack"
 
       - name: Build debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        working-directory: src
+        run: ./gradlew assembleDebug --stacktrace --no-daemon
 
       - name: Locate APK
         id: apk
         run: |
           set -euo pipefail
-          APK=$(find app/build/outputs/apk/debug -name "*.apk" -print -quit)
+          APK=$(find src/app/build/outputs/apk/debug -name "*.apk" -print -quit)
           if [ -z "$APK" ]; then
             echo "No APK produced" >&2
             exit 1
