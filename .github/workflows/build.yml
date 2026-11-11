@@ -1,32 +1,73 @@
 name: Build debug APK
+
 on:
   push:
-    branches: [main]
+    branches: [main, master]
+  pull_request:
   workflow_dispatch:
+
+# One run per branch: a new push cancels the older build instead of queueing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
+
 jobs:
   build:
+    name: assembleDebug
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Submodules (preloader, libHttpClient) are only needed by the native
+          # world-tools module, which is disabled in this fork. Fetching them
+          # would add ~1 GB and minutes to every build for nothing.
+          submodules: false
 
-      - name: Unpack source
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      # Caches the Gradle user home and the wrapper distribution, and writes a
+      # build scan summary. This is the single biggest speedup on repeat runs.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          # AGP pulls build-tools itself once licences are accepted.
+          packages: >-
+            platforms;android-36
+            ndk;28.2.13676358
+            cmake;3.22.1
+          log-accepted-android-sdk-licenses: false
+
+      - name: Report toolchain versions
         run: |
-          set -euo pipefail
-          unzip -q vela-fork-src.zip -d src
-          chmod +x src/gradlew
-          test -f src/app/build.gradle
+          java -version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/ndk" || true
 
+      # The :minecraft game-shim module calls FirebaseApp.getInstance(), which
+      # throws without a config file. google-services.json is gitignored, so CI
+      # writes a placeholder. Vela itself ships no Firebase and no telemetry.
       - name: Provide placeholder Firebase config
         run: |
-          cat > src/app/google-services.json <<'JSON'
+          set -euo pipefail
+          cat > app/google-services.json <<'JSON'
           {
             "project_info": {
               "project_number": "000000000000",
-              "project_id": "vela-ci",
-              "storage_bucket": "vela-ci.appspot.com"
+              "project_id": "vela-ci-placeholder",
+              "storage_bucket": "vela-ci-placeholder.appspot.com"
             },
             "client": [
               {
@@ -42,28 +83,82 @@ jobs:
             "configuration_version": "1"
           }
           JSON
+          python3 -c "import json; json.load(open('app/google-services.json')); print('placeholder config valid')"
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
 
-      - uses: gradle/actions/setup-gradle@v4
+      # google-services.json is committed as a placeholder, so no secrets are
+      # required. Firebase analytics/crash reporting stay inert; the launcher,
+      # profiles and native mod loading are unaffected.
+      # The renderer is native code, so it is compiled here and packed as a
+      # levipack alongside the prebuilt mods. It ships inside the mod folder,
+      # with the resolved pack beside the library.
+      - name: Build shader renderer
+        run: |
+          set -euo pipefail
+          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/28.2.13676358"
+          test -d "$ANDROID_NDK_HOME"
+          cd src/renderer
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26
+          cmake --build build -j4
+          test -f build/libvela_render.so
 
-      - uses: android-actions/setup-android@v3
-        with:
-          packages: >-
-            platforms;android-36
-            ndk;28.2.13676358
-            cmake;3.22.1
-          log-accepted-android-sdk-licenses: false
+          STAGE="$GITHUB_WORKSPACE/src/renderer/stage/VelaRender"
+          mkdir -p "$STAGE/pack" "$STAGE/pack_perf" "$STAGE/pack_perf"
+          cp build/libvela_render.so "$STAGE/"
+          cp "$GITHUB_WORKSPACE"/src/app/src/main/assets/vela_pack/* "$STAGE/pack/"
+          cp "$GITHUB_WORKSPACE"/src/app/src/main/assets/vela_pack_perf/* "$STAGE/pack_perf/"
+          cat > "$STAGE/manifest.json" <<'JSON'
+          {
+            "name": "VelaRender",
+            "type": "preload-native",
+            "version": "0.1.0",
+            "author": "Vela",
+            "description": "Executes the shaderpack's composite and final passes.",
+            "entry": "libvela_render.so"
+          }
+          JSON
+          # A levipack holds exactly what goes into mods/<id>/: manifest.json at
+          # the root, not nested inside a folder.
+          cd "$STAGE"
+          zip -qr "$GITHUB_WORKSPACE/src/app/src/main/assets/mods/VelaRender.levipack" .
+          unzip -l "$GITHUB_WORKSPACE/src/app/src/main/assets/mods/VelaRender.levipack"
 
-      - name: Build
-        working-directory: src
+      - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      - uses: actions/upload-artifact@v4
+      - name: Locate APK
+        id: apk
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/debug -name "*.apk" -print -quit)
+          if [ -z "$APK" ]; then
+            echo "No APK produced" >&2
+            exit 1
+          fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$APK")" >> "$GITHUB_OUTPUT"
+          ls -lh "$APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: vela-debug-apk
-          path: src/app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.apk.outputs.path }}
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            **/build/reports/**
+            **/build/outputs/logs/**
+          if-no-files-found: ignore
+          retention-days: 7
