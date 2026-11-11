@@ -62,7 +62,7 @@ jobs:
       - name: Provide placeholder Firebase config
         run: |
           set -euo pipefail
-          cat > app/google-services.json <<'JSON'
+          cat > src/app/google-services.json <<'JSON'
           {
             "project_info": {
               "project_number": "000000000000",
@@ -83,7 +83,7 @@ jobs:
             "configuration_version": "1"
           }
           JSON
-          python3 -c "import json; json.load(open('app/google-services.json')); print('placeholder config valid')"
+          python3 -c "import json; json.load(open('src/app/google-services.json')); print('placeholder config valid')"
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
