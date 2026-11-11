@@ -29,6 +29,20 @@ jobs:
           # would add ~1 GB and minutes to every build for nothing.
           submodules: false
 
+      # The repository holds the project as a single zip; unpack it first.
+      - name: Unpack source
+        run: |
+          set -euo pipefail
+          ZIP=$(ls -1 *.zip 2>/dev/null | head -1)
+          test -n "$ZIP" || { echo "::error::no .zip in the repository root"; exit 1; }
+          echo "unpacking $ZIP"
+          rm -rf src && unzip -q "$ZIP" -d src
+          test -d src/renderer || { echo "::error::zip has no renderer/ - wrong build"; exit 1; }
+          test -f src/gradlew || { echo "::error::gradlew missing from the zip"; exit 1; }
+          test -d src/app || { echo "::error::zip has no app/ module"; exit 1; }
+          chmod +x src/gradlew
+          echo "unpacked ok: $(du -sh src | cut -f1)"
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
